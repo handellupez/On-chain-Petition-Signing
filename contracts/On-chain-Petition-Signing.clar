@@ -9,9 +9,31 @@
 (define-constant ERR_EMPTY_TITLE (err u107))
 (define-constant ERR_EMPTY_DESCRIPTION (err u108))
 (define-constant ERR_CANNOT_SIGN_OWN_PETITION (err u109))
+(define-constant ERR_INVALID_CATEGORY (err u110))
 
 (define-data-var next-petition-id uint u1)
 (define-data-var total-petitions uint u0)
+
+(define-data-var category-count uint u0)
+
+(define-map categories
+    { category-id: uint }
+    {
+        name: (string-ascii 50),
+        created-by: principal,
+        petition-count: uint,
+    }
+)
+
+(define-map category-names
+    { name: (string-ascii 50) }
+    { category-id: uint }
+)
+
+(define-map petition-categories
+    { petition-id: uint }
+    { category-id: uint }
+)
 
 (define-map petitions
     { petition-id: uint }
@@ -78,6 +100,28 @@
 
 (define-read-only (get-next-petition-id)
     (var-get next-petition-id)
+)
+
+(define-read-only (get-category (category-id uint))
+    (map-get? categories { category-id: category-id })
+)
+
+(define-read-only (get-category-by-name (name (string-ascii 50)))
+    (match (map-get? category-names { name: name })
+        category-data (map-get? categories { category-id: (get category-id category-data) })
+        none
+    )
+)
+
+(define-read-only (get-petition-category (petition-id uint))
+    (match (map-get? petition-categories { petition-id: petition-id })
+        category-data (map-get? categories { category-id: (get category-id category-data) })
+        none
+    )
+)
+
+(define-read-only (get-category-count)
+    (var-get category-count)
 )
 
 (define-read-only (is-petition-expired (petition-id uint))
@@ -156,6 +200,73 @@
             )
             (err u201)
         )
+    )
+)
+
+(define-public (create-category (name (string-ascii 50)))
+    (let ((category-id (+ (var-get category-count) u1)))
+        (asserts! (> (len name) u0) ERR_EMPTY_TITLE)
+        (asserts! (is-none (map-get? category-names { name: name }))
+            ERR_INVALID_CATEGORY
+        )
+
+        (map-set categories { category-id: category-id } {
+            name: name,
+            created-by: tx-sender,
+            petition-count: u0,
+        })
+
+        (map-set category-names { name: name } { category-id: category-id })
+
+        (var-set category-count category-id)
+
+        (ok category-id)
+    )
+)
+
+(define-public (create-petition-with-category
+        (title (string-ascii 100))
+        (description (string-ascii 500))
+        (signature-threshold uint)
+        (duration-blocks uint)
+        (category-id uint)
+    )
+    (let (
+            (petition-id (var-get next-petition-id))
+            (current-block-time (unwrap! (get-stacks-block-info? time (- stacks-block-height u1))
+                ERR_PETITION_NOT_FOUND
+            ))
+            (expires-at (+ current-block-time (* duration-blocks u600)))
+            (category-data (unwrap! (get-category category-id) ERR_INVALID_CATEGORY))
+        )
+        (asserts! (> (len title) u0) ERR_EMPTY_TITLE)
+        (asserts! (> (len description) u0) ERR_EMPTY_DESCRIPTION)
+        (asserts! (> signature-threshold u0) ERR_INVALID_THRESHOLD)
+        (asserts! (> duration-blocks u0) ERR_INVALID_DURATION)
+
+        (map-set petitions { petition-id: petition-id } {
+            title: title,
+            description: description,
+            creator: tx-sender,
+            created-at: current-block-time,
+            expires-at: expires-at,
+            signature-threshold: signature-threshold,
+            current-signatures: u0,
+            is-active: true,
+            is-successful: false,
+        })
+
+        (map-set petition-signers { petition-id: petition-id } { signers: (list) })
+        (map-set petition-categories { petition-id: petition-id } { category-id: category-id })
+
+        (map-set categories { category-id: category-id }
+            (merge category-data { petition-count: (+ (get petition-count category-data) u1) })
+        )
+
+        (var-set next-petition-id (+ petition-id u1))
+        (var-set total-petitions (+ (var-get total-petitions) u1))
+
+        (ok petition-id)
     )
 )
 
