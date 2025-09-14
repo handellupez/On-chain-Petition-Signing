@@ -10,6 +10,9 @@
 (define-constant ERR_EMPTY_DESCRIPTION (err u108))
 (define-constant ERR_CANNOT_SIGN_OWN_PETITION (err u109))
 (define-constant ERR_INVALID_CATEGORY (err u110))
+(define-constant ERR_DELEGATION_NOT_FOUND (err u111))
+(define-constant ERR_CANNOT_DELEGATE_TO_SELF (err u112))
+(define-constant ERR_NOT_AUTHORIZED_DELEGATE (err u113))
 
 (define-data-var next-petition-id uint u1)
 (define-data-var total-petitions uint u0)
@@ -66,6 +69,22 @@
 (define-map user-signatures
     { user: principal }
     { petition-ids: (list 100 uint) }
+)
+
+(define-map delegations
+    { delegator: principal }
+    {
+        delegate: principal,
+        active: bool,
+    }
+)
+
+(define-map delegate-permissions
+    {
+        delegate: principal,
+        delegator: principal,
+    }
+    { granted-at: uint }
 )
 
 (define-read-only (get-petition (petition-id uint))
@@ -408,4 +427,100 @@
         petition-id: petition-id,
         signer: signer,
     })
+)
+
+(define-read-only (get-delegation (delegator principal))
+    (map-get? delegations { delegator: delegator })
+)
+
+(define-read-only (is-active-delegate
+        (delegate principal)
+        (delegator principal)
+    )
+    (match (get-delegation delegator)
+        delegation-data (and
+            (is-eq delegate (get delegate delegation-data))
+            (get active delegation-data)
+        )
+        false
+    )
+)
+
+(define-read-only (has-delegation-permission
+        (delegate principal)
+        (delegator principal)
+    )
+    (is-some (map-get? delegate-permissions {
+        delegate: delegate,
+        delegator: delegator,
+    }))
+)
+
+(define-public (set-delegate (delegate principal))
+    (let ((current-time (unwrap! (get-stacks-block-info? time (- stacks-block-height u1))
+            ERR_PETITION_NOT_FOUND
+        )))
+        (asserts! (not (is-eq tx-sender delegate)) ERR_CANNOT_DELEGATE_TO_SELF)
+
+        (map-set delegations { delegator: tx-sender } {
+            delegate: delegate,
+            active: true,
+        })
+
+        (map-set delegate-permissions {
+            delegate: delegate,
+            delegator: tx-sender,
+        } { granted-at: current-time }
+        )
+
+        (ok true)
+    )
+)
+
+(define-public (revoke-delegation)
+    (match (get-delegation tx-sender)
+        delegation-data (begin
+            (map-set delegations { delegator: tx-sender }
+                (merge delegation-data { active: false })
+            )
+            (ok true)
+        )
+        ERR_DELEGATION_NOT_FOUND
+    )
+)
+
+(define-public (sign-petition-as-delegate
+        (petition-id uint)
+        (delegator principal)
+    )
+    (let ((petition-data (unwrap! (get-petition petition-id) ERR_PETITION_NOT_FOUND)))
+        (asserts! (get is-active petition-data) ERR_PETITION_INACTIVE)
+        (asserts! (not (is-petition-expired petition-id)) ERR_PETITION_EXPIRED)
+        (asserts! (is-active-delegate tx-sender delegator)
+            ERR_NOT_AUTHORIZED_DELEGATE
+        )
+        (asserts! (not (has-signed petition-id delegator)) ERR_ALREADY_SIGNED)
+        (asserts! (not (is-eq delegator (get creator petition-data)))
+            ERR_CANNOT_SIGN_OWN_PETITION
+        )
+
+        (map-set signatures {
+            petition-id: petition-id,
+            signer: delegator,
+        } { signed-at: (unwrap! (get-stacks-block-info? time (- stacks-block-height u1))
+            ERR_PETITION_NOT_FOUND
+        ) }
+        )
+
+        (try! (add-signer-to-list petition-id delegator))
+        (try! (add-petition-to-user delegator petition-id))
+
+        (map-set petitions { petition-id: petition-id }
+            (merge petition-data { current-signatures: (+ (get current-signatures petition-data) u1) })
+        )
+
+        (update-petition-success petition-id)
+
+        (ok true)
+    )
 )
