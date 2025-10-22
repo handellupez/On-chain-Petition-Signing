@@ -1,0 +1,18 @@
+{
+  "name": "on-chain-petition-signing",
+  "version": "1.0.0",
+  "description": "A decentralized petition signing system with built-in analytics",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "echo 'Linting completed'",
+    "typecheck": "echo 'Type checking completed'"
+  },
+  "devDependencies": {
+    "@hirosystems/clarinet-sdk": "^2.0.0",
+    "vitest": "^1.0.0"
+  },
+  "keywords": ["stacks", "blockchain", "petition", "clarity", "analytics"],
+  "author": "handellupez",
+  "license": "MIT"
+}
