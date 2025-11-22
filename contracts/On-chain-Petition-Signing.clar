@@ -12,6 +12,9 @@
 (define-constant ERR_EMPTY_TITLE (err u107))
 (define-constant ERR_EMPTY_DESCRIPTION (err u108))
 (define-constant ERR_CANNOT_SIGN_OWN_PETITION (err u109))
+(define-constant ERR_NOT_SIGNED (err u110))
+(define-constant ERR_CANNOT_REVOKE_SUCCESSFUL (err u111))
+(define-constant ERR_INVALID_REVOCATION (err u112))
 
 ;; Contract owner
 (define-constant CONTRACT_OWNER tx-sender)
@@ -33,13 +36,16 @@
         signature-threshold: uint,
         current-signatures: uint,
         is-active: bool,
-        is-successful: bool
+        is-successful: bool,
     }
 )
 
 ;; Signature tracking
 (define-map signatures
-    { petition-id: uint, signer: principal }
+    {
+        petition-id: uint,
+        signer: principal,
+    }
     { signed-at: uint }
 )
 
@@ -49,7 +55,7 @@
     {
         petitions-created: uint,
         petitions-signed: uint,
-        last-activity: uint
+        last-activity: uint,
     }
 )
 
@@ -58,7 +64,7 @@
     { day: uint }
     {
         petitions-created: uint,
-        signatures-made: uint
+        signatures-made: uint,
     }
 )
 
@@ -94,7 +100,7 @@
             signature-threshold: signature-threshold,
             current-signatures: u0,
             is-active: true,
-            is-successful: false
+            is-successful: false,
         })
 
         ;; Update counters
@@ -129,7 +135,8 @@
         (map-set signatures {
             petition-id: petition-id,
             signer: tx-sender,
-        } { signed-at: current-time })
+        } { signed-at: current-time }
+        )
 
         ;; Update petition signature count
         (let ((new-signature-count (+ (get current-signatures petition-data) u1)))
@@ -140,9 +147,9 @@
             ;; Check if petition reached threshold
             (if (>= new-signature-count (get signature-threshold petition-data))
                 (map-set petitions { petition-id: petition-id }
-                    (merge petition-data { 
+                    (merge petition-data {
                         current-signatures: new-signature-count,
-                        is-successful: true 
+                        is-successful: true,
                     })
                 )
                 true
@@ -160,6 +167,32 @@
     )
 )
 
+(define-public (revoke-signature (petition-id uint))
+    (let (
+            (petition-data (unwrap! (get-petition petition-id) ERR_PETITION_NOT_FOUND))
+            (current-signatures (get current-signatures petition-data))
+        )
+        (asserts! (get is-active petition-data) ERR_PETITION_INACTIVE)
+        (asserts! (not (is-petition-expired petition-id)) ERR_PETITION_EXPIRED)
+        (asserts! (not (get is-successful petition-data))
+            ERR_CANNOT_REVOKE_SUCCESSFUL
+        )
+        (asserts! (has-signed petition-id tx-sender) ERR_NOT_SIGNED)
+        (asserts! (> current-signatures u0) ERR_INVALID_REVOCATION)
+        (map-delete signatures {
+            petition-id: petition-id,
+            signer: tx-sender,
+        })
+        (let ((new-signature-count (- current-signatures u1)))
+            (map-set petitions { petition-id: petition-id }
+                (merge petition-data { current-signatures: new-signature-count })
+            )
+        )
+        (var-set total-signatures (- (var-get total-signatures) u1))
+        (ok true)
+    )
+)
+
 ;; === READ-ONLY FUNCTIONS ===
 
 ;; Get petition details
@@ -168,7 +201,10 @@
 )
 
 ;; Check if user has signed petition
-(define-read-only (has-signed (petition-id uint) (user principal))
+(define-read-only (has-signed
+        (petition-id uint)
+        (user principal)
+    )
     (is-some (map-get? signatures {
         petition-id: petition-id,
         signer: user,
@@ -210,16 +246,20 @@
     (default-to {
         petitions-created: u0,
         petitions-signed: u0,
-        last-activity: u0
-    } (map-get? user-analytics { user: user }))
+        last-activity: u0,
+    }
+        (map-get? user-analytics { user: user })
+    )
 )
 
 ;; Get daily stats
 (define-read-only (get-daily-stats (day uint))
     (default-to {
         petitions-created: u0,
-        signatures-made: u0
-    } (map-get? daily-stats { day: day }))
+        signatures-made: u0,
+    }
+        (map-get? daily-stats { day: day })
+    )
 )
 
 ;; Get platform analytics
@@ -230,39 +270,59 @@
         average-signatures: (if (> (var-get total-petitions) u0)
             (/ (var-get total-signatures) (var-get total-petitions))
             u0
-        )
+        ),
     })
 )
 
 ;; === PRIVATE FUNCTIONS ===
 
 ;; Update user statistics
-(define-private (update-user-stats (user principal) (created bool) (signed bool))
+(define-private (update-user-stats
+        (user principal)
+        (created bool)
+        (signed bool)
+    )
     (let (
             (current-stats (get-user-analytics user))
             (current-time (unwrap-panic (get-stacks-block-info? time (- stacks-block-height u1))))
         )
         (map-set user-analytics { user: user } {
             petitions-created: (+ (get petitions-created current-stats)
-                (if created u1 u0)),
+                (if created
+                    u1
+                    u0
+                )),
             petitions-signed: (+ (get petitions-signed current-stats)
-                (if signed u1 u0)),
-            last-activity: current-time
+                (if signed
+                    u1
+                    u0
+                )),
+            last-activity: current-time,
         })
     )
 )
 
 ;; Update daily statistics
-(define-private (update-daily-stats (timestamp uint) (petition-created bool) (signature-made bool))
+(define-private (update-daily-stats
+        (timestamp uint)
+        (petition-created bool)
+        (signature-made bool)
+    )
     (let (
             (day (/ timestamp u86400))
             (current-daily (get-daily-stats day))
         )
         (map-set daily-stats { day: day } {
             petitions-created: (+ (get petitions-created current-daily)
-                (if petition-created u1 u0)),
+                (if petition-created
+                    u1
+                    u0
+                )),
             signatures-made: (+ (get signatures-made current-daily)
-                (if signature-made u1 u0))
+                (if signature-made
+                    u1
+                    u0
+                )),
         })
     )
 )
